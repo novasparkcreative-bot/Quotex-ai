@@ -6,10 +6,12 @@ from pydantic import BaseModel, Field
 
 from .live_control import LiveTradingController
 from .market_data import QuotexMarketProvider, market_times
+from .paper_engine import AutonomousPaperEngine
 
-app = FastAPI(title="Quotex AI", version="0.3.0")
+app = FastAPI(title="Quotex AI", version="0.4.0")
 live_controller = LiveTradingController()
 market_provider = QuotexMarketProvider()
+paper_engine = AutonomousPaperEngine()
 DASHBOARD = Path(__file__).resolve().parents[2] / "static" / "dashboard.html"
 
 
@@ -21,6 +23,12 @@ class DemoLoginRequest(BaseModel):
     ssid: str = Field(default="", max_length=500)
     email: str = Field(default="", max_length=254)
     password: str = Field(default="", max_length=500)
+
+
+class PaperStartRequest(BaseModel):
+    amount: float = Field(default=10.0, ge=1, le=10000)
+    duration_seconds: int = Field(default=60, ge=5, le=3600)
+    interval_seconds: int = Field(default=30, ge=5, le=3600)
 
 
 @app.get("/", include_in_schema=False)
@@ -50,11 +58,7 @@ async def demo_login(request: DemoLoginRequest) -> dict:
     if not request.ssid.strip() and not (request.email.strip() and request.password):
         raise HTTPException(status_code=400, detail="Enter a demo SSID or demo email and password.")
     try:
-        await market_provider.login(
-            ssid=request.ssid,
-            email=request.email,
-            password=request.password,
-        )
+        await market_provider.login(ssid=request.ssid, email=request.email, password=request.password)
         return {"logged_in": True, "demo_only": True, "message": "Demo login connected."}
     except Exception as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
@@ -91,23 +95,31 @@ async def markets(
             continue
         if search_lower and search_lower not in item.symbol.lower() and search_lower not in item.name.lower():
             continue
-        filtered.append(
-            {
-                "symbol": item.symbol,
-                "name": item.name,
-                "type": item.market_type,
-                "is_otc": item.is_otc,
-                "is_open": item.is_open,
-                "payout": item.payout,
-            }
-        )
-    return {
-        "source": source,
-        "demo_only": True,
-        "count": len(filtered),
-        "markets": filtered,
-        **market_times(),
-    }
+        filtered.append({"symbol": item.symbol, "name": item.name, "type": item.market_type, "is_otc": item.is_otc, "is_open": item.is_open, "payout": item.payout})
+    return {"source": source, "demo_only": True, "count": len(filtered), "markets": filtered, **market_times()}
+
+
+@app.get("/api/paper/status")
+def paper_status() -> dict:
+    return paper_engine.status()
+
+
+@app.post("/api/paper/start")
+async def paper_start(request: PaperStartRequest) -> dict:
+    try:
+        return await paper_engine.start(request.amount, request.duration_seconds, request.interval_seconds)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/paper/stop")
+async def paper_stop() -> dict:
+    return await paper_engine.stop()
+
+
+@app.get("/api/paper/history")
+def paper_history() -> dict:
+    return {"count": len(paper_engine.history()), "trades": paper_engine.history()}
 
 
 @app.get("/api/live/status")
@@ -118,8 +130,6 @@ def live_status() -> dict:
 
 @app.post("/api/live/enable")
 def enable_live(request: LiveEnableRequest) -> dict:
-    # This endpoint only controls the safety gate. No real-money order
-    # execution is implemented or enabled by this service.
     status = live_controller.enable(request.duration_minutes)
     return {"enabled": status.enabled, "expires_at": status.expires_at}
 
@@ -136,7 +146,4 @@ def execute_live() -> dict:
         live_controller.assert_live_allowed()
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    raise HTTPException(
-        status_code=501,
-        detail="Real-money broker execution is not implemented in this build.",
-    )
+    raise HTTPException(status_code=501, detail="Real-money broker execution is not implemented in this build.")
