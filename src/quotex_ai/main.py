@@ -1,18 +1,29 @@
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from .live_control import LiveTradingController
 
 app = FastAPI(title="Quotex AI", version="0.1.0")
 live_controller = LiveTradingController()
+DASHBOARD = Path(__file__).resolve().parents[2] / "static" / "dashboard.html"
 
 
 class LiveEnableRequest(BaseModel):
     duration_minutes: int = Field(ge=1, le=240)
 
 
-@app.get("/")
-def root() -> dict:
+@app.get("/", include_in_schema=False)
+def root():
+    if DASHBOARD.exists():
+        return FileResponse(DASHBOARD)
+    return {"service": "quotex-ai", "status": "ok", "trading_mode": "paper"}
+
+
+@app.get("/api", include_in_schema=False)
+def api_root() -> dict:
     return {"service": "quotex-ai", "status": "ok", "trading_mode": "paper"}
 
 
