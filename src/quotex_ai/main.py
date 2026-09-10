@@ -7,8 +7,9 @@ from pydantic import BaseModel, Field
 from .live_control import LiveTradingController
 from .market_data import QuotexMarketProvider, market_times
 from .paper_engine import AutonomousPaperEngine
+from .signals import build_signal
 
-app = FastAPI(title="Quotex AI", version="0.4.0")
+app = FastAPI(title="Quotex AI", version="0.4.1")
 live_controller = LiveTradingController()
 market_provider = QuotexMarketProvider()
 paper_engine = AutonomousPaperEngine()
@@ -29,6 +30,12 @@ class PaperStartRequest(BaseModel):
     amount: float = Field(default=10.0, ge=1, le=10000)
     duration_seconds: int = Field(default=60, ge=5, le=3600)
     interval_seconds: int = Field(default=30, ge=5, le=3600)
+
+
+class SignalRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=30)
+    price: float
+    previous_price: float
 
 
 @app.get("/", include_in_schema=False)
@@ -97,6 +104,21 @@ async def markets(
             continue
         filtered.append({"symbol": item.symbol, "name": item.name, "type": item.market_type, "is_otc": item.is_otc, "is_open": item.is_open, "payout": item.payout})
     return {"source": source, "demo_only": True, "count": len(filtered), "markets": filtered, **market_times()}
+
+
+@app.post("/api/signal")
+def signal(request: SignalRequest) -> dict:
+    result = build_signal(request.symbol, price=request.price, previous_price=request.previous_price)
+    return {
+        "symbol": result.symbol,
+        "direction": result.direction,
+        "entry_conditions": result.entry_conditions,
+        "suggested_expiry": result.suggested_expiry,
+        "confidence": result.confidence,
+        "invalidation": result.invalidation,
+        "generated_at": result.generated_at,
+        "paper_only": True,
+    }
 
 
 @app.get("/api/paper/status")
