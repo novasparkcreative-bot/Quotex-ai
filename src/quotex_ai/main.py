@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from .live_control import LiveTradingController
 from .market_data import QuotexMarketProvider, market_times
 
-app = FastAPI(title="Quotex AI", version="0.2.0")
+app = FastAPI(title="Quotex AI", version="0.3.0")
 live_controller = LiveTradingController()
 market_provider = QuotexMarketProvider()
 DASHBOARD = Path(__file__).resolve().parents[2] / "static" / "dashboard.html"
@@ -15,6 +15,12 @@ DASHBOARD = Path(__file__).resolve().parents[2] / "static" / "dashboard.html"
 
 class LiveEnableRequest(BaseModel):
     duration_minutes: int = Field(ge=1, le=240)
+
+
+class DemoLoginRequest(BaseModel):
+    ssid: str = Field(default="", max_length=500)
+    email: str = Field(default="", max_length=254)
+    password: str = Field(default="", max_length=500)
 
 
 @app.get("/", include_in_schema=False)
@@ -37,6 +43,32 @@ def health() -> dict:
 @app.get("/api/time")
 def api_time() -> dict:
     return market_times()
+
+
+@app.post("/api/demo/login")
+async def demo_login(request: DemoLoginRequest) -> dict:
+    if not request.ssid.strip() and not (request.email.strip() and request.password):
+        raise HTTPException(status_code=400, detail="Enter a demo SSID or demo email and password.")
+    try:
+        await market_provider.login(
+            ssid=request.ssid,
+            email=request.email,
+            password=request.password,
+        )
+        return {"logged_in": True, "demo_only": True, "message": "Demo login connected."}
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+@app.post("/api/demo/logout")
+async def demo_logout() -> dict:
+    await market_provider.logout()
+    return {"logged_in": False, "demo_only": True}
+
+
+@app.get("/api/demo/status")
+def demo_status() -> dict:
+    return {"logged_in": market_provider.logged_in(), "demo_only": True}
 
 
 @app.get("/api/markets")
