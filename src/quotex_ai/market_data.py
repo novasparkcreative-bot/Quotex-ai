@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 @dataclass(frozen=True)
@@ -20,8 +21,9 @@ class Market:
 class QuotexMarketProvider:
     """Demo-only market-data adapter.
 
-    It uses the unofficial QuotexAPI package for asset metadata when a demo SSID
-    is configured. It never calls buy/order methods and never enables real trading.
+    Credentials supplied through the dashboard are kept only in process memory.
+    The client is always created with is_demo=True. This class never calls buy,
+    sell, or other order-execution methods.
     """
 
     def __init__(self) -> None:
@@ -29,6 +31,7 @@ class QuotexMarketProvider:
         self._lock = asyncio.Lock()
         self._cache: list[Market] = []
         self._cache_at: float = 0.0
+        self._login: dict[str, str] = {}
 
     @staticmethod
     def _value(obj: Any, *names: str, default: Any = None) -> Any:
@@ -39,31 +42,58 @@ class QuotexMarketProvider:
                 return getattr(obj, name)
         return default
 
-    def _configured(self) -> bool:
-        return bool(os.getenv("QUOTEX_SSID")) or bool(
-            os.getenv("QUOTEX_EMAIL") and os.getenv("QUOTEX_PASSWORD")
-        )
+    def configure(self, *, ssid: str = "", email: str = "", password: str = "") -> None:
+        self._login = {}
+        if ssid.strip():
+            self._login["ssid"] = ssid.strip()
+        elif email.strip() and password:
+            self._login["email"] = email.strip()
+            self._login["password"] = password
+        self._cache = []
+        self._cache_at = 0.0
+
+    def logged_in(self) -> bool:
+        return bool(self._client is not None)
+
+    async def login(self, *, ssid: str = "", email: str = "", password: str = "") -> None:
+        self.configure(ssid=ssid, email=email, password=password)
+        async with self._lock:
+            if self._client is not None:
+                return
+            client = await self._build_client()
+            if client is None:
+                raise RuntimeError("Quotex demo client is unavailable or credentials are missing.")
+            self._client = client
+
+    async def _build_client(self) -> Any:
+        if not self._login:
+            return None
+        try:
+            from QuotexAPI import QuotexAPI  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("QuotexAPI package is not installed.") from exc
+        kwargs: dict[str, Any] = {"is_demo": True, **self._login}
+        client = QuotexAPI(**kwargs)
+        result = client.connect()
+        if asyncio.iscoroutine(result):
+            await result
+        return client
 
     async def _get_client(self) -> Any:
         if self._client is not None:
             return self._client
-        if not self._configured():
+        if self._login:
+            self._client = await self._build_client()
+            return self._client
+        if not (os.getenv("QUOTEX_SSID") or (os.getenv("QUOTEX_EMAIL") and os.getenv("QUOTEX_PASSWORD"))):
             return None
-        try:
-            from QuotexAPI import QuotexAPI  # type: ignore
-        except ImportError:
-            return None
-
-        kwargs: dict[str, Any] = {"is_demo": True}
-        if os.getenv("QUOTEX_SSID"):
-            kwargs["ssid"] = os.environ["QUOTEX_SSID"]
-        else:
-            kwargs["email"] = os.environ["QUOTEX_EMAIL"]
-            kwargs["password"] = os.environ["QUOTEX_PASSWORD"]
-        client = QuotexAPI(**kwargs)
-        await client.connect()
-        self._client = client
-        return client
+        self.configure(
+            ssid=os.getenv("QUOTEX_SSID", ""),
+            email=os.getenv("QUOTEX_EMAIL", ""),
+            password=os.getenv("QUOTEX_PASSWORD", ""),
+        )
+        self._client = await self._build_client()
+        return self._client
 
     async def get_markets(self, force_refresh: bool = False) -> tuple[list[Market], str]:
         now = asyncio.get_running_loop().time()
@@ -103,19 +133,26 @@ class QuotexMarketProvider:
             self._cache_at = asyncio.get_running_loop().time()
             return self._cache, "quotex-demo-api"
 
-    async def close(self) -> None:
-        if self._client is not None:
-            disconnect = getattr(self._client, "disconnect", None)
-            if disconnect:
-                result = disconnect()
-                if asyncio.iscoroutine(result):
-                    await result
+    async def logout(self) -> None:
+        async with self._lock:
+            if self._client is not None:
+                disconnect = getattr(self._client, "disconnect", None)
+                if disconnect:
+                    result = disconnect()
+                    if asyncio.iscoroutine(result):
+                        await result
             self._client = None
+            self._login = {}
+            self._cache = []
+            self._cache_at = 0.0
+
+    async def close(self) -> None:
+        await self.logout()
 
 
 def market_times() -> dict[str, str]:
     now = datetime.now(timezone.utc)
-    ist = now.astimezone(__import__("zoneinfo").ZoneInfo("Asia/Kolkata"))
+    ist = now.astimezone(ZoneInfo("Asia/Kolkata"))
     return {
         "server_time": now.isoformat(),
         "server_timezone": "UTC",
