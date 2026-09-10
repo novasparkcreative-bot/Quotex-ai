@@ -3,5 +3,6 @@ uvicorn[standard]>=0.30,<1
 pydantic>=2.7,<3
 python-dotenv>=1.0,<2
 pytest>=8,<9
+tzdata>=2025.2
 # Unofficial upstream client; market-data use is demo-only in this project.
 quotex-api @ git+https://github.com/ChipaDevTeam/QuotexAPI.git
